@@ -1,0 +1,418 @@
+
+import importlib
+import subprocess
+import sys
+
+
+def ensure_package_installed(package_name, import_name=None):
+    """Install a package with pip if it is not already available."""
+    import_name = import_name or package_name
+    try:
+        importlib.import_module(import_name)
+    except ImportError:
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", package_name])
+
+
+ensure_package_installed("gradio")
+ensure_package_installed("matplotlib")
+ensure_package_installed("pandas")
+
+import math
+
+import gradio as gr
+import matplotlib
+matplotlib.use("Agg")  # non-interactive backend, safe for web apps
+import matplotlib.pyplot as plt
+import pandas as pd
+
+
+
+SAFE_FUNCTIONS = {
+    "sin": math.sin,
+    "cos": math.cos,
+    "tan": math.tan,
+    "asin": math.asin,
+    "acos": math.acos,
+    "atan": math.atan,
+    "sinh": math.sinh,
+    "cosh": math.cosh,
+    "tanh": math.tanh,
+    "exp": math.exp,
+    "log": math.log,     # natural log
+    "log10": math.log10,
+    "sqrt": math.sqrt,
+    "abs": abs,
+    "pi": math.pi,
+    "e": math.e,
+}
+
+
+def build_safe_namespace(x_value, y_value):
+    """Create a restricted namespace containing only safe math functions
+    plus the current x and y values. No Python builtins are exposed."""
+    namespace = dict(SAFE_FUNCTIONS)
+    namespace["x"] = x_value
+    namespace["y"] = y_value
+    namespace["__builtins__"] = {}  # completely disable built-in functions
+    return namespace
+
+
+def evaluate_derivative(equation_text, x_value, y_value):
+    """
+    Safely evaluate the user-entered expression f(x, y) = dy/dx
+    at a specific (x_value, y_value) point.
+
+    Raises a ValueError with a clear, user-friendly message if the
+    expression is invalid or produces an invalid mathematical result.
+    """
+    namespace = build_safe_namespace(x_value, y_value)
+    try:
+        result = eval(equation_text, namespace)
+    except ZeroDivisionError:
+        raise ValueError("The equation caused a division by zero during calculation.")
+    except (NameError, SyntaxError):
+        raise ValueError(
+            "The equation contains an invalid or unsupported expression. "
+            "Use only x, y, numbers, +, -, *, /, **, and functions like "
+            "sin, cos, tan, exp, log, sqrt, abs."
+        )
+    except Exception as error:  # catch-all so the app never crashes
+        raise ValueError(f"Could not evaluate the equation: {error}")
+
+    if isinstance(result, complex):
+        raise ValueError("The equation produced a complex number, which is not supported.")
+
+    try:
+        result = float(result)
+    except (TypeError, ValueError):
+        raise ValueError("The equation did not produce a valid numeric result.")
+
+    if math.isnan(result) or math.isinf(result):
+        raise ValueError("The equation produced an undefined result (NaN or infinity) "
+                          "at one of the calculation points.")
+
+    return result
+
+
+
+def validate_inputs(equation_text, x0, y0, x_target, step_size):
+    """
+    Validate all user inputs and raise a ValueError with a clear message
+    for any problem. Returns nothing if everything is valid.
+    """
+    if equation_text is None or equation_text.strip() == "":
+        raise ValueError("Please enter a differential equation, for example: x + y")
+
+    if step_size == 0:
+        raise ValueError("Step size (h) cannot be zero.")
+
+    direction = x_target - x0
+    if direction == 0:
+        raise ValueError("Target x must be different from the initial x0.")
+
+    # The step size must point in the same direction as (target - x0)
+    if (direction > 0 and step_size < 0) or (direction < 0 and step_size > 0):
+        raise ValueError(
+            "Step size direction is invalid: h must have the same sign as "
+            "(target x - initial x0)."
+        )
+
+    number_of_steps = abs(direction) / abs(step_size)
+    if number_of_steps > 100000:
+        raise ValueError("Too many steps would be required. Please use a larger step size.")
+
+
+def solve_with_rk4(equation_text, x0, y0, x_target, step_size):
+    """
+    Solve dy/dx = f(x, y) from x0 to x_target using the classic RK4 method.
+
+    Returns:
+        table_rows: list of dictionaries, one per step, containing
+                    Step, x, y, k1, k2, k3, k4, New y
+        x_values:   list of all x points visited (including the start)
+        y_values:   list of all y points visited (including the start)
+        final_x:    the actual last x value reached
+        final_y:    the approximate y value at final_x
+    """
+    validate_inputs(equation_text, x0, y0, x_target, step_size)
+
+    h = step_size
+    x_current = x0
+    y_current = y0
+
+    # Number of full steps needed to (approximately) reach the target.
+    raw_steps = (x_target - x0) / h
+    number_of_steps = round(raw_steps)
+    if number_of_steps < 1:
+        number_of_steps = 1
+
+    table_rows = []
+    x_values = [x_current]
+    y_values = [y_current]
+
+    for step_index in range(1, number_of_steps + 1):
+        # --- The four RK4 slope estimates ---
+        k1 = h * evaluate_derivative(equation_text, x_current, y_current)
+        k2 = h * evaluate_derivative(equation_text, x_current + h / 2, y_current + k1 / 2)
+        k3 = h * evaluate_derivative(equation_text, x_current + h / 2, y_current + k2 / 2)
+        k4 = h * evaluate_derivative(equation_text, x_current + h, y_current + k3)
+
+        # --- Weighted average update ---
+        y_next = y_current + (k1 + 2 * k2 + 2 * k3 + k4) / 6
+        x_next = x_current + h
+
+        table_rows.append({
+            "Step": step_index,
+            "x": round(x_current, 6),
+            "y": round(y_current, 6),
+            "k1": round(k1, 6),
+            "k2": round(k2, 6),
+            "k3": round(k3, 6),
+            "k4": round(k4, 6),
+            "New y": round(y_next, 6),
+        })
+
+        x_current, y_current = x_next, y_next
+        x_values.append(x_current)
+        y_values.append(y_current)
+
+    # Warn (softly, via rounding note) if the target wasn't hit exactly
+    final_x = x_current
+    final_y = y_current
+    return table_rows, x_values, y_values, final_x, final_y, raw_steps, number_of_steps
+
+
+
+def create_solution_plot(x_values, y_values):
+    """Build a clean, professional Matplotlib figure of the RK4 solution."""
+    figure, axis = plt.subplots(figsize=(7, 4.5), dpi=120)
+
+    axis.plot(x_values, y_values, color="#2563eb", linewidth=2.2,
+              marker="o", markersize=4, markerfacecolor="#1d4ed8",
+              label="RK4 numerical solution")
+
+    axis.set_title("Runge-Kutta 4th Order Numerical Solution", fontsize=13, fontweight="bold")
+    axis.set_xlabel("x", fontsize=11)
+    axis.set_ylabel("y", fontsize=11)
+    axis.grid(True, linestyle="--", alpha=0.5)
+    axis.legend(loc="best", fontsize=9)
+    figure.tight_layout()
+
+    return figure
+
+
+def run_rk4_solver(equation_text, x0_text, y0_text, x_target_text, h_text):
+    """
+    Main callback triggered by the 'Calculate RK4 Solution' button.
+    Handles parsing, validation, calculation, and formatting of all outputs.
+    Never raises an exception back to Gradio - all errors are caught and
+    shown to the user as a friendly message instead.
+    """
+    empty_plot, _ = plt.subplots(figsize=(7, 4.5), dpi=120)
+    empty_plot.text(0.5, 0.5, "No graph to display", ha="center", va="center")
+
+    # ---- Parse numeric fields safely ----
+    try:
+        x0 = float(x0_text)
+    except (TypeError, ValueError):
+        return "**Error:** Initial x0 must be a valid number.", None, "", "", empty_plot
+
+    try:
+        y0 = float(y0_text)
+    except (TypeError, ValueError):
+        return "**Error:** Initial y0 must be a valid number.", None, "", "", empty_plot
+
+    try:
+        x_target = float(x_target_text)
+    except (TypeError, ValueError):
+        return "**Error:** Target x must be a valid number.", None, "", "", empty_plot
+
+    try:
+        h = float(h_text)
+    except (TypeError, ValueError):
+        return "**Error:** Step size h must be a valid number.", None, "", "", empty_plot
+
+    equation_text = (equation_text or "").strip()
+
+    # ---- Run the RK4 solver (validation happens inside) ----
+    try:
+        (table_rows, x_values, y_values,
+         final_x, final_y, raw_steps, number_of_steps) = solve_with_rk4(
+            equation_text, x0, y0, x_target, h
+        )
+    except ValueError as error:
+        return f"**Error:** {error}", None, "", "", empty_plot
+
+    plt.close(empty_plot)
+
+    # ---- Build the final answer text ----
+    note = ""
+    if abs(raw_steps - number_of_steps) > 1e-6:
+        note = (f"\n\n*Note: with h = {h}, the exact target x = {x_target} could not be "
+                f"reached with whole steps. The closest value was used instead "
+                f"({number_of_steps} steps), landing at x = {round(final_x, 6)}.*")
+
+    final_answer_markdown = (
+        f"### Final Answer\n\n"
+        f"**y({round(final_x, 6)}) ≈ {round(final_y, 6)}**"
+        f"{note}"
+    )
+
+    # ---- Build the step-by-step table ----
+    results_dataframe = pd.DataFrame(table_rows)
+
+    # ---- Build the explanation ----
+    explanation_markdown = (
+        "### How RK4 Calculated This Result\n\n"
+        f"Starting from **x₀ = {x0}, y₀ = {y0}**, the method took **{number_of_steps} "
+        f"step(s)** of size **h = {h}** to move toward x = {x_target}.\n\n"
+        "For every step:\n"
+        "- **k1** estimates the slope at the beginning of the interval.\n"
+        "- **k2** estimates the slope at the midpoint, using k1 to predict y there.\n"
+        "- **k3** re-estimates the midpoint slope, using k2 for a better prediction.\n"
+        "- **k4** estimates the slope at the end of the interval, using k3.\n\n"
+        "These four slope estimates are then combined into a single weighted-average "
+        "slope: (k1 + 2·k2 + 2·k3 + k4) / 6, which is used to advance y to the next "
+        "point. This weighting makes RK4 far more accurate than simpler methods "
+        "like Euler's method, while still only requiring the function itself "
+        "(no derivatives) to be evaluated."
+    )
+
+    # ---- Build the graph ----
+    solution_figure = create_solution_plot(x_values, y_values)
+
+    return final_answer_markdown, results_dataframe, explanation_markdown, "", solution_figure
+
+
+CUSTOM_CSS = """
+.gradio-container {
+    background: linear-gradient(180deg, #f4f7fb 0%, #eef2f9 100%) !important;
+    font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif !important;
+}
+#app-header {
+    text-align: center;
+    padding: 28px 16px 18px 16px;
+}
+#app-header h1 {
+    color: #1e3a8a;
+    font-size: 2rem;
+    font-weight: 800;
+    margin-bottom: 4px;
+}
+#app-header p {
+    color: #475569;
+    font-size: 1.05rem;
+    margin-top: 0;
+}
+.section-card {
+    background: #ffffff;
+    border-radius: 14px;
+    padding: 18px 20px;
+    box-shadow: 0 2px 10px rgba(30, 58, 138, 0.08);
+    border: 1px solid #e2e8f0;
+}
+#calculate-btn {
+    background: linear-gradient(90deg, #2563eb, #1d4ed8) !important;
+    color: white !important;
+    font-size: 1.05rem !important;
+    font-weight: 700 !important;
+    padding: 12px !important;
+    border-radius: 10px !important;
+    border: none !important;
+}
+#calculate-btn:hover {
+    filter: brightness(1.08);
+}
+.how-it-works {
+    background: #f8fafc;
+    border-left: 4px solid #2563eb;
+    border-radius: 8px;
+    padding: 14px 18px;
+}
+"""
+
+HEADER_HTML = """
+<div id="app-header">
+  <h1>Runge-Kutta Method &mdash; Fourth Order (RK4)</h1>
+  <p>Numerical Solution of First-Order Ordinary Differential Equations</p>
+</div>
+"""
+
+HOW_IT_WORKS_HTML = """
+<div class="how-it-works">
+<h3>How RK4 Works</h3>
+<p>To move from one point to the next, RK4 combines four slope estimates:</p>
+<ul>
+<li><b>k1 &rarr; Initial slope</b> at the start of the step.</li>
+<li><b>k2 &rarr; Midpoint slope</b>, using k1 to estimate y at the midpoint.</li>
+<li><b>k3 &rarr; Improved midpoint slope</b>, using k2 for a refined estimate.</li>
+<li><b>k4 &rarr; Endpoint slope</b>, using k3 to estimate y at the end of the step.</li>
+</ul>
+<p>These four slopes are combined using the weighted average
+<code>(k1 + 2k2 + 2k3 + k4) / 6</code> to accurately advance the solution
+from y<sub>n</sub> to y<sub>n+1</sub>.</p>
+</div>
+"""
+
+
+
+with gr.Blocks(css=CUSTOM_CSS, theme=gr.themes.Soft(primary_hue="blue"),
+                title="RK4 Numerical Solver") as app:
+
+    gr.HTML(HEADER_HTML)
+
+    with gr.Row():
+        with gr.Column(scale=1):
+            with gr.Group(elem_classes="section-card"):
+                gr.Markdown("### Input Section")
+                equation_input = gr.Textbox(
+                    label="Differential Equation  (dy/dx = f(x, y))",
+                    placeholder="Example: x + y",
+                    value="x + y",
+                    info="Use x, y, +, -, *, /, **, and functions like sin, cos, tan, exp, log, sqrt, abs."
+                )
+                x0_input = gr.Textbox(label="Initial x₀", value="0")
+                y0_input = gr.Textbox(label="Initial y₀", value="1")
+                x_target_input = gr.Textbox(label="Target x", value="1")
+                h_input = gr.Textbox(label="Step Size h", value="0.1")
+
+                calculate_button = gr.Button("Calculate RK4 Solution",
+                                              elem_id="calculate-btn")
+
+            gr.HTML(HOW_IT_WORKS_HTML)
+
+        with gr.Column(scale=1):
+            with gr.Group(elem_classes="section-card"):
+                gr.Markdown("### Results")
+                final_answer_output = gr.Markdown()
+                solution_plot_output = gr.Plot(label="Solution Graph")
+
+    with gr.Row():
+        with gr.Group(elem_classes="section-card"):
+            gr.Markdown("### Step-by-Step Calculation Table")
+            table_output = gr.Dataframe(
+                headers=["Step", "x", "y", "k1", "k2", "k3", "k4", "New y"],
+                interactive=False,
+            )
+
+    with gr.Row():
+        with gr.Group(elem_classes="section-card"):
+            explanation_output = gr.Markdown()
+            hidden_placeholder = gr.Markdown(visible=False)
+
+    calculate_button.click(
+        fn=run_rk4_solver,
+        inputs=[equation_input, x0_input, y0_input, x_target_input, h_input],
+        outputs=[final_answer_output, table_output, explanation_output,
+                 hidden_placeholder, solution_plot_output],
+    )
+
+    gr.Markdown(
+        "<div style='text-align:center; color:#94a3b8; padding-top:10px;'>"
+        "Runge-Kutta 4th Order Numerical Solver &middot; Built with Python and Gradio"
+        "</div>"
+    )
+
+
+if __name__ == "__main__":
+        app.launch(share=True)
