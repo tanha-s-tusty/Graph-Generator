@@ -2,6 +2,7 @@ import importlib
 import subprocess
 import sys
 
+
 def ensure_package_installed(package_name, import_name=None):
     """Install a package with pip if it is not already available."""
     import_name = import_name or package_name
@@ -9,6 +10,7 @@ def ensure_package_installed(package_name, import_name=None):
         importlib.import_module(import_name)
     except ImportError:
         subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", package_name])
+
 
 ensure_package_installed("gradio")
 ensure_package_installed("matplotlib")
@@ -21,6 +23,8 @@ import matplotlib
 matplotlib.use("Agg")  # non-interactive backend, safe for web apps
 import matplotlib.pyplot as plt
 import pandas as pd
+
+
 
 SAFE_FUNCTIONS = {
     "sin": math.sin,
@@ -41,6 +45,7 @@ SAFE_FUNCTIONS = {
     "e": math.e,
 }
 
+
 def build_safe_namespace(x_value, y_value):
     """Create a restricted namespace containing only safe math functions
     plus the current x and y values. No Python builtins are exposed."""
@@ -49,6 +54,7 @@ def build_safe_namespace(x_value, y_value):
     namespace["y"] = y_value
     namespace["__builtins__"] = {}  # completely disable built-in functions
     return namespace
+
 
 def evaluate_derivative(equation_text, x_value, y_value):
     """
@@ -86,6 +92,8 @@ def evaluate_derivative(equation_text, x_value, y_value):
 
     return result
 
+
+
 def validate_inputs(equation_text, x0, y0, x_target, step_size):
     """
     Validate all user inputs and raise a ValueError with a clear message
@@ -111,6 +119,7 @@ def validate_inputs(equation_text, x0, y0, x_target, step_size):
     number_of_steps = abs(direction) / abs(step_size)
     if number_of_steps > 100000:
         raise ValueError("Too many steps would be required. Please use a larger step size.")
+
 
 def solve_with_rk4(equation_text, x0, y0, x_target, step_size):
     """
@@ -402,6 +411,7 @@ with gr.Blocks(css=CUSTOM_CSS, theme=gr.themes.Soft(primary_hue="blue"),
         "Runge-Kutta 4th Order Numerical Solver &middot; Built with Python and Gradio"
         "</div>"
     )
+
 
 if __name__ == "__main__":
         app.launch(share=True)
