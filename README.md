@@ -81,13 +81,13 @@ This process is repeated until the target `x` value is reached.
 Clone the repository:
 
 ```bash
-git clone https://github.com/YOUR-USERNAME/YOUR-REPOSITORY.git
+git clone https://github.com/tanha-s-tusty/Graph-Generator.git
 ```
 
 Go to the project directory:
 
 ```bash
-cd YOUR-REPOSITORY
+cd Graph-Generator
 ```
 
 Install the required packages:
